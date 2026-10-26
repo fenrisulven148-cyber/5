@@ -12,6 +12,7 @@
 <body>
 <canvas id="c" width="960" height="600"></canvas>
 <div id="hint">Клик — включить/выключить свет</div>
+<script src="girl.js"></script>
 <script>
 "use strict";
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
@@ -312,8 +313,18 @@ function drawLightCone(r, bulbPos){
   ctx.restore();
 }
 
-/* объекты в гараже (ящик убран по требованию — сцена чистая) */
-function drawProps(r){}
+/* объекты в гараже: аниме-девушка в полный рост (girl.js) */
+let T0 = performance.now();
+function drawProps(r){
+  const b = r.back;
+  // стоит на полу, чуть ближе к камере, справа от двери
+  const footY = b.y + b.h + (H - (b.y + b.h)) * 0.55;
+  const cx    = b.x + b.w * 0.78;
+  const scale = 0.62;                       // ~400px роста — вписана под потолок
+  const t = (performance.now() - T0)/1000;
+  window.lampOn = lightOn;
+  drawGirl(ctx, cx, footY, scale, t);
+}
 
 /* ============ ГЛАВНАЯ ОТРИСОВКА ============ */
 function render(){
@@ -347,7 +358,7 @@ function render(){
   // ---- окно на левой стене (в перспективе)
   drawWindowOnLeftWall(r);
 
-  // ---- предметы
+  // ---- предметы (аниме-девушка стоит на полу)
   drawProps(r);
 
   // ---- освещение
