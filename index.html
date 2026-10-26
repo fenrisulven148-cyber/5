@@ -11,21 +11,20 @@
 </head>
 <body>
 <canvas id="c" width="960" height="600"></canvas>
-<div id="hint">Клик — включить/выключить свет | Двигай мышь — посмотри вокруг</div>
+<div id="hint">Клик — включить/выключить свет</div>
 <script>
 "use strict";
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 const W = cv.width, H = cv.height;
 
 /* ============ ПЕРСПЕКТИВА (одна точка схода) ============ */
-// VP — точка схода, смещается от движения мыши (лёгкий параллакс)
-let vpX = W/2, vpY = H*0.46;          // базовая точка схода
-let mouseDX = 0, mouseDY = 0;         // смещение взгляда (-1..1)
+// VP — фиксированная точка схода (сцена статична, без параллакса)
+let vpX = W/2, vpY = H*0.46;          // точка схода
 
 // Задняя стена гаража (плоский "экран" в глубине)
 const BW = 420, BH = 300;             // размеры задней стены на экране
 function backWall(){
-  const cx = W/2 + mouseDX*30, cy = H*0.47 + mouseDY*18;
+  const cx = W/2, cy = H*0.47;
   return { x: cx - BW/2, y: cy - BH/2 + 30, w: BW, h: BH };
 }
 
@@ -89,10 +88,6 @@ const concrete = concreteTex();
 /* ============ СОСТОЯНИЕ ============ */
 let lightOn = true;
 let flicker = 0;
-document.addEventListener('mousemove', e=>{
-  mouseDX = ((e.clientX/window.innerWidth)*2-1);
-  mouseDY = ((e.clientY/window.innerHeight)*2-1);
-});
 cv.addEventListener('click', ()=> lightOn=!lightOn);
 
 /* ============ ГЕОМЕТРИЯ КОМНАТЫ ============ */
@@ -317,39 +312,11 @@ function drawLightCone(r, bulbPos){
   ctx.restore();
 }
 
-/* тень от двери на пол */
-function drawProps(r){
-  const b=r.back;
-  // ящик у правой стены на полу
-  const t=0.45;
-  const x = W + (b.x+b.w-W)*t;
-  const yTop = 0 + (b.y-0)*t;
-  const yBot = H + (b.y+b.h-H)*t;
-  const size = 46*(1-t)+26;
-  const y = yBot - size;
-  // верхняя грань (видна сверху — объём!)
-  ctx.fillStyle='#7a5a30';
-  ctx.beginPath();
-  ctx.moveTo(x-size, y); ctx.lineTo(x-size*0.6, y-size*0.35);
-  ctx.lineTo(x+size*1.1, y-size*0.35); ctx.lineTo(x+size*0.7, y);
-  ctx.closePath(); ctx.fill();
-  // фасад
-  const wood = ctx.createLinearGradient(x-size,0,x+size*0.7,0);
-  wood.addColorStop(0,'#5d4222'); wood.addColorStop(1,'#8a6335');
-  ctx.fillStyle=wood; ctx.fillRect(x-size, y, size*1.7, size);
-  ctx.strokeStyle='rgba(0,0,0,0.4)'; ctx.lineWidth=2;
-  ctx.strokeRect(x-size, y, size*1.7, size);
-  ctx.beginPath(); ctx.moveTo(x-size*0.15,y); ctx.lineTo(x-size*0.15,y+size); ctx.stroke();
-  // тень ящика
-  ctx.fillStyle='rgba(0,0,0,0.35)';
-  ctx.beginPath();
-  ctx.ellipse(x-size*0.15, y+size+6, size*1.1, 10, 0, 0, 7); ctx.fill();
-}
+/* объекты в гараже (ящик убран по требованию — сцена чистая) */
+function drawProps(r){}
 
 /* ============ ГЛАВНАЯ ОТРИСОВКА ============ */
 function render(){
-  vpX = W/2 + mouseDX*60;
-  vpY = H*0.46 + mouseDY*30;
   const r = room();
 
   // фон (за пределами — ничего, но на всякий чёрный)
