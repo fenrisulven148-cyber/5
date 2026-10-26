@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Гараж — 2D игра</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1a1a;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    overflow: hidden;
+  }
+  canvas {
+    border: 3px solid #444;
+    image-rendering: pixelated;
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// Размер сцены
+const W = 960;
+const H = 540;
+canvas.width = W;
+canvas.height = H;
+
+// Параметры гаража (вид изнутри)
+const FLOOR_Y = 400;          // линия пола
+const CEIL_Y = 60;            // линия потолка
+const WALL_L = 40;            // левая граница стены
+const WALL_R = W - 40;        // правая граница стены
+
+// Окно на левой стене
+const WIN_X = 70, WIN_Y = 140, WIN_W = 140, WIN_H = 180;
+
+// Дверь на задней стене
+const DOOR_W = 110, DOOR_H = 240;
+const DOOR_X = W / 2 - DOOR_W / 2;
+const DOOR_Y = FLOOR_Y - DOOR_H;
+
+// Лампочка на потолке
+const BULB_X = W / 2;
+const BULB_Y = CEIL_Y + 20;
+const CORD_LEN = 20;
+
+// Свет включён/выключен по клику
+let lightOn = true;
+
+// ---------- Кирпичная стена ----------
+function drawBrickWall(x, y, w, h, baseColor, mortarColor, brickW = 48, brickH = 24) {
+  ctx.fillStyle = mortarColor;
+  ctx.fillRect(x, y, w, h);
+
+  const rows = Math.ceil(h / brickH);
+  for (let r = 0; r < rows; r++) {
+    const offset = (r % 2) * (brickW / 2);
+    for (let c = -1; c <= Math.ceil(w / brickW); c++) {
+      const bx = x + c * brickW + offset + 2;
+      const by = y + r * brickH + 2;
+      const bw = brickW - 4;
+      const bh = brickH - 4;
+
+      if (bx + bw < x || bx > x + w || by + bh < y || by > y + h) continue;
+
+      // Лёгкая вариация цвета каждого кирпича (детерминированная)
+      const seed = ((r * 131 + c * 977) % 20) - 10;
+      const [br, bg, bb] = baseColor;
+      ctx.fillStyle = `rgb(${clamp(br + seed)},${clamp(bg + seed)},${clamp(bb + seed)})`;
+      ctx.fillRect(
+        Math.max(bx, x), Math.max(by, y),
+        Math.min(bx + bw, x + w) - Math.max(bx, x),
+        Math.min(by + bh, y + h) - Math.max(by, y)
+      );
+    }
+  }
+}
+
+function clamp(v) { return Math.max(0, Math.min(255, v)); }
+
+// ---------- Пол ----------
+function drawFloor() {
+  // Бетонный пол
+  const grad = ctx.createLinearGradient(0, FLOOR_Y, 0, H);
+  grad.addColorStop(0, '#5a5a5e');
+  grad.addColorStop(1, '#3c3c40');
+  ctx.fillStyle = grad;
+  ctx.fillRect(WALL_L, FLOOR_Y, WALL_R - WALL_L, H - FLOOR_Y);
+
+  // Трещины / швы плит
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+  ctx.lineWidth = 2;
+  for (let i = 1; i < 4; i++) {
+    const py = FLOOR_Y + (H - FLOOR_Y) * i / 4;
+    ctx.beginPath();
+    ctx.moveTo(WALL_L, py);
+    ctx.lineTo(WALL_R, py);
+    ctx.stroke();
+  }
+  ctx.beginPath();
+  ctx.moveTo(W / 2, FLOOR_Y);
+  ctx.lineTo(W / 2 - 60, H);
+  ctx.stroke();
+}
+
+// ---------- Потолок ----------
+function drawCeiling() {
+  ctx.fillStyle = '#2e2b28';
+  ctx.fillRect(WALL_L, 0, WALL_R - WALL_L, CEIL_Y);
+  // Балки
+  ctx.fillStyle = '#4a3f35';
+  for (let i = 0; i < 5; i++) {
+    ctx.fillRect(WALL_L + 40 + i * 180, CEIL_Y - 12, 24, 12);
+  }
+}
+
+// ---------- Окно (слева) ----------
+function drawWindow() {
+  // Рама
+  ctx.fillStyle = '#6b5636';
+  ctx.fillRect(WIN_X - 8, WIN_Y - 8, WIN_W + 16, WIN_H + 16);
+  // Стекло — ночное небо снаружи
+  const sky = ctx.createLinearGradient(0, WIN_Y, 0, WIN_Y + WIN_H);
+  sky.addColorStop(0, lightOn ? '#1e3a5f' : '#0d1b2e');
+  sky.addColorStop(1, lightOn ? '#2c5a8c' : '#152438');
+  ctx.fillStyle = sky;
+  ctx.fillRect(WIN_X, WIN_Y, WIN_W, WIN_H);
+
+  // Луна за окном
+  ctx.fillStyle = '#e8e4c9';
+  ctx.beginPath();
+  ctx.arc(WIN_X + WIN_W - 35, WIN_Y + 40, 16, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Перекладины
+  ctx.fillStyle = '#6b5636';
+  ctx.fillRect(WIN_X + WIN_W / 2 - 3, WIN_Y, 6, WIN_H);
+  ctx.fillRect(WIN_X, WIN_Y + WIN_H / 2 - 3, WIN_W, 6);
+
+  // Подоконник
+  ctx.fillStyle = '#7a6440';
+  ctx.fillRect(WIN_X - 14, WIN_Y + WIN_H + 8, WIN_W + 28, 10);
+}
+
+// ---------- Дверь (задняя стена) ----------
+function drawDoor() {
+  // Косяк
+  ctx.fillStyle = '#3d2f1e';
+  ctx.fillRect(DOOR_X - 8, DOOR_Y - 8, DOOR_W + 16, DOOR_H + 8);
+  // Полотно
+  const dg = ctx.createLinearGradient(DOOR_X, 0, DOOR_X + DOOR_W, 0);
+  dg.addColorStop(0, '#7a4a22');
+  dg.addColorStop(0.5, '#8f5a2c');
+  dg.addColorStop(1, '#6b3f1c');
+  ctx.fillStyle = dg;
+  ctx.fillRect(DOOR_X, DOOR_Y, DOOR_W, DOOR_H);
+
+  // Филенки
+  ctx.strokeStyle = '#5a3517';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(DOOR_X + 12, DOOR_Y + 15, DOOR_W - 24, 80);
+  ctx.strokeRect(DOOR_X + 12, DOOR_Y + 115, DOOR_W - 24, DOOR_H - 135);
+
+  // Ручка
+  ctx.fillStyle = '#d4af37';
+  ctx.beginPath();
+  ctx.arc(DOOR_X + DOOR_W - 18, DOOR_Y + DOOR_H / 2, 6, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// ---------- Лампочка и свет ----------
+function drawBulbAndLight() {
+  // Провод
+  ctx.strokeStyle = '#222';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(BULB_X, CEIL_Y);
+  ctx.lineTo(BULB_X, BULB_Y - 10);
+  ctx.stroke();
+
+  // Патрон
+  ctx.fillStyle = '#333';
+  ctx.fillRect(BULB_X - 7, BULB_Y - 14, 14, 10);
+
+  if (lightOn) {
+    // Конус света на пол
+    const coneGrad = ctx.createRadialGradient(BULB_X, BULB_Y, 10, BULB_X, BULB_Y, 420);
+    coneGrad.addColorStop(0, 'rgba(255,240,180,0.55)');
+    coneGrad.addColorStop(0.4, 'rgba(255,235,160,0.22)');
+    coneGrad.addColorStop(1, 'rgba(255,235,160,0)');
+    ctx.fillStyle = coneGrad;
+    ctx.beginPath();
+    ctx.moveTo(BULB_X - 12, BULB_Y);
+    ctx.lineTo(BULB_X - 320, H);
+    ctx.lineTo(BULB_X + 320, H);
+    ctx.lineTo(BULB_X + 12, BULB_Y);
+    ctx.closePath();
+    ctx.fill();
+
+    // Пятно света на полу
+    const pool = ctx.createRadialGradient(BULB_X, FLOOR_Y + 60, 20, BULB_X, FLOOR_Y + 60, 260);
+    pool.addColorStop(0, 'rgba(255,245,200,0.5)');
+    pool.addColorStop(1, 'rgba(255,245,200,0)');
+    ctx.fillStyle = pool;
+    ctx.beginPath();
+    ctx.ellipse(BULB_X, FLOOR_Y + 70, 280, 90, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Сама лампочка
+  ctx.fillStyle = lightOn ? '#fff6c9' : '#8a8570';
+  ctx.beginPath();
+  ctx.arc(BULB_X, BULB_Y, 11, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (lightOn) {
+    // Свечение вокруг нити
+    ctx.fillStyle = 'rgba(255,255,200,0.35)';
+    ctx.beginPath();
+    ctx.arc(BULB_X, BULB_Y, 20, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// ---------- Общая темнота при выключенном свете ----------
+function drawDarkness() {
+  if (!lightOn) {
+    ctx.fillStyle = 'rgba(5,5,15,0.72)';
+    ctx.fillRect(0, 0, W, H);
+
+    // Слабый лунный свет из окна
+    const moon = ctx.createRadialGradient(WIN_X + WIN_W / 2, WIN_Y + WIN_H / 2, 10,
+                                          WIN_X + WIN_W / 2, WIN_Y + WIN_H / 2, 220);
+    moon.addColorStop(0, 'rgba(120,150,200,0.25)');
+    moon.addColorStop(1, 'rgba(120,150,200,0)');
+    ctx.fillStyle = moon;
+    ctx.fillRect(0, 0, W, H);
+  }
+}
+
+// ---------- Боковые стены (перспектива) ----------
+function drawSideWalls() {
+  // Левая полоса стены
+  drawBrickWall(0, CEIL_Y, WALL_L, FLOOR_Y - CEIL_Y, [122, 61, 42], '#77726a', 20, 24);
+  // Правая полоса стены
+  drawBrickWall(WALL_R, CEIL_Y, W - WALL_R, FLOOR_Y - CEIL_Y, [122, 61, 42], '#77726a', 20, 24);
+}
+
+// ---------- Главный цикл отрисовки ----------
+function render() {
+  // Задняя кирпичная стена
+  drawBrickWall(0, CEIL_Y, W, FLOOR_Y - CEIL_Y, [138, 66, 46], '#7d7870');
+
+  drawSideWalls();
+  drawCeiling();
+  drawFloor();
+  drawWindow();
+  drawDoor();
+  drawBulbAndLight();
+  drawDarkness();
+
+  // Подсказка
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.font = '14px monospace';
+  ctx.fillText('Клик — включить/выключить свет', 12, H - 12);
+
+  requestAnimationFrame(render);
+}
+
+// Переключение света по клику
+canvas.addEventListener('click', () => { lightOn = !lightOn; });
+
+render();
+</script>
+</body>
+</html>
