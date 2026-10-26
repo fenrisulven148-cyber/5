@@ -2,280 +2,404 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<title>Гараж — 2D игра</title>
+<title>Гараж — псевдо-3D</title>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    background: #1a1a1a;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    height: 100vh;
-    overflow: hidden;
-  }
-  canvas {
-    border: 3px solid #444;
-    image-rendering: pixelated;
-  }
+  html,body{margin:0;height:100%;background:#0a0a0c;display:flex;align-items:center;justify-content:center;overflow:hidden;font-family:monospace}
+  canvas{box-shadow:0 0 60px #000;border:1px solid #222}
+  #hint{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);color:#666;font-size:12px;pointer-events:none}
 </style>
 </head>
 <body>
-<canvas id="game"></canvas>
+<canvas id="c" width="960" height="600"></canvas>
+<div id="hint">Клик — включить/выключить свет | Двигай мышь — посмотри вокруг</div>
 <script>
-const canvas = document.getElementById('game');
-const ctx = canvas.getContext('2d');
+"use strict";
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const W = cv.width, H = cv.height;
 
-// Размер сцены
-const W = 960;
-const H = 540;
-canvas.width = W;
-canvas.height = H;
+/* ============ ПЕРСПЕКТИВА (одна точка схода) ============ */
+// VP — точка схода, смещается от движения мыши (лёгкий параллакс)
+let vpX = W/2, vpY = H*0.46;          // базовая точка схода
+let mouseDX = 0, mouseDY = 0;         // смещение взгляда (-1..1)
 
-// Параметры гаража (вид изнутри)
-const FLOOR_Y = 400;          // линия пола
-const CEIL_Y = 60;            // линия потолка
-const WALL_L = 40;            // левая граница стены
-const WALL_R = W - 40;        // правая граница стены
+// Задняя стена гаража (плоский "экран" в глубине)
+const BW = 420, BH = 300;             // размеры задней стены на экране
+function backWall(){
+  const cx = W/2 + mouseDX*30, cy = H*0.47 + mouseDY*18;
+  return { x: cx - BW/2, y: cy - BH/2 + 30, w: BW, h: BH };
+}
 
-// Окно на левой стене
-const WIN_X = 70, WIN_Y = 140, WIN_W = 140, WIN_H = 180;
+// Промежуточная точка вдоль луча к точке схода: t=0 -> экран, t=1 -> задняя стена
+function depthPoint(px, py, t){
+  return [ px + (vpX - px)*t, py + (vpY - py)*t ];
+}
 
-// Дверь на задней стене
-const DOOR_W = 110, DOOR_H = 240;
-const DOOR_X = W / 2 - DOOR_W / 2;
-const DOOR_Y = FLOOR_Y - DOOR_H;
+/* ============ ПРОЦЕДУРНЫЙ КИРПИЧ ============ */
+// сид-рандом для стабильного рисунка
+let seed = 12345;
+function rnd(){ seed = (seed*1103515245+12345) & 0x7fffffff; return seed/0x7fffffff; }
+function reseed(s){ seed = s; }
 
-// Лампочка на потолке
-const BULB_X = W / 2;
-const BULB_Y = CEIL_Y + 20;
-const CORD_LEN = 20;
-
-// Свет включён/выключен по клику
-let lightOn = true;
-
-// ---------- Кирпичная стена ----------
-function drawBrickWall(x, y, w, h, baseColor, mortarColor, brickW = 48, brickH = 24) {
-  ctx.fillStyle = mortarColor;
-  ctx.fillRect(x, y, w, h);
-
-  const rows = Math.ceil(h / brickH);
-  for (let r = 0; r < rows; r++) {
-    const offset = (r % 2) * (brickW / 2);
-    for (let c = -1; c <= Math.ceil(w / brickW); c++) {
-      const bx = x + c * brickW + offset + 2;
-      const by = y + r * brickH + 2;
-      const bw = brickW - 4;
-      const bh = brickH - 4;
-
-      if (bx + bw < x || bx > x + w || by + bh < y || by > y + h) continue;
-
-      // Лёгкая вариация цвета каждого кирпича (детерминированная)
-      const seed = ((r * 131 + c * 977) % 20) - 10;
-      const [br, bg, bb] = baseColor;
-      ctx.fillStyle = `rgb(${clamp(br + seed)},${clamp(bg + seed)},${clamp(bb + seed)})`;
-      ctx.fillRect(
-        Math.max(bx, x), Math.max(by, y),
-        Math.min(bx + bw, x + w) - Math.max(bx, x),
-        Math.min(by + bh, y + h) - Math.max(by, y)
-      );
+function brickPattern(w, h, scale, base, mortar){
+  // возвращает offscreen canvas с кирпичной кладкой
+  const c = document.createElement('canvas'); c.width=w; c.height=h;
+  const g = c.getContext('2d');
+  g.fillStyle = mortar; g.fillRect(0,0,w,h);
+  const bh = 14*scale, bw = 30*scale, gap = 2*scale;
+  reseed(777);
+  for(let row=0, y=0; y<h; row++, y+=bh+gap){
+    const off = (row%2)? -bw/2 : 0;
+    for(let x=off; x<w; x+=bw+gap){
+      const v = rnd();
+      const r = parseInt(base.slice(1,3),16), gg=parseInt(base.slice(3,5),16), b=parseInt(base.slice(5,7),16);
+      const d = (v-0.5)*40;
+      g.fillStyle = `rgb(${r+d|0},${gg+d*0.7|0},${b+d*0.5|0})`;
+      g.fillRect(x, y, bw, bh);
+      // лёгкая текстура
+      g.fillStyle = 'rgba(0,0,0,'+(rnd()*0.12)+')';
+      g.fillRect(x, y+bh*0.6, bw, bh*0.4);
     }
   }
+  return c;
 }
 
-function clamp(v) { return Math.max(0, Math.min(255, v)); }
+const brickTexLight = brickPattern(512,512,1,'#8a4a38','#3a3230');
+const brickTexDark  = brickPattern(512,512,0.8,'#6e3a2c','#2c2624');
 
-// ---------- Пол ----------
-function drawFloor() {
-  // Бетонный пол
-  const grad = ctx.createLinearGradient(0, FLOOR_Y, 0, H);
-  grad.addColorStop(0, '#5a5a5e');
-  grad.addColorStop(1, '#3c3c40');
-  ctx.fillStyle = grad;
-  ctx.fillRect(WALL_L, FLOOR_Y, WALL_R - WALL_L, H - FLOOR_Y);
-
-  // Трещины / швы плит
-  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-  ctx.lineWidth = 2;
-  for (let i = 1; i < 4; i++) {
-    const py = FLOOR_Y + (H - FLOOR_Y) * i / 4;
-    ctx.beginPath();
-    ctx.moveTo(WALL_L, py);
-    ctx.lineTo(WALL_R, py);
-    ctx.stroke();
+// бетонный пол
+function concreteTex(){
+  const c=document.createElement('canvas'); c.width=512;c.height=512;
+  const g=c.getContext('2d'); g.fillStyle='#5a5a5e'; g.fillRect(0,0,512,512);
+  reseed(4242);
+  for(let i=0;i<9000;i++){
+    const v=rnd();
+    g.fillStyle='rgba('+(v>0.5?'255,255,255':'0,0,0')+','+(rnd()*0.05)+')';
+    g.fillRect(rnd()*512, rnd()*512, 2, 2);
   }
+  // трещины
+  g.strokeStyle='rgba(20,20,22,0.5)'; g.lineWidth=1.5;
+  for(let k=0;k<5;k++){
+    g.beginPath(); let x=rnd()*512,y=rnd()*512; g.moveTo(x,y);
+    for(let i=0;i<20;i++){ x+=(rnd()-0.5)*60; y+=(rnd()-0.3)*50; g.lineTo(x,y);} g.stroke();
+  }
+  return c;
+}
+const concrete = concreteTex();
+
+/* ============ СОСТОЯНИЕ ============ */
+let lightOn = true;
+let flicker = 0;
+document.addEventListener('mousemove', e=>{
+  mouseDX = ((e.clientX/window.innerWidth)*2-1);
+  mouseDY = ((e.clientY/window.innerHeight)*2-1);
+});
+cv.addEventListener('click', ()=> lightOn=!lightOn);
+
+/* ============ ГЕОМЕТРИЯ КОМНАТЫ ============ */
+// Передние углы экрана = corners of canvas. Задняя стена = backWall().
+// Пол: трапеция (нижние углы экрана -> нижние углы задней стены)
+// Потолок: верхняя трапеция. Боковые стены: боковые трапеции.
+
+function room(){
+  const b = backWall();
+  return {
+    floor:[ [0,H],[W,H],[b.x+b.w,b.y+b.h],[b.x,b.y+b.h] ],
+    ceil: [ [0,0],[b.x,b.y],[b.x+b.w,b.y],[W,0] ],
+    left: [ [0,0],[b.x,b.y],[b.x,b.y+b.h],[0,H] ],
+    right:[ [W,0],[W,H],[b.x+b.w,b.y+b.h],[b.x+b.w,b.y] ],
+    back: b
+  };
+}
+
+function fillPoly(pts, style){
+  ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+  for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
+  ctx.closePath(); ctx.fillStyle=style; ctx.fill();
+}
+
+// заштриховать полигон текстурой с перспективным "сжатием" (псевдо через clip+scale)
+function texPoly(pts, tex, alpha){
+  ctx.save();
+  ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+  for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
+  ctx.closePath(); ctx.clip();
+  const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]);
+  const x0=Math.min(...xs), x1=Math.max(...xs), y0=Math.min(...ys), y1=Math.max(...ys);
+  ctx.globalAlpha = alpha===undefined?1:alpha;
+  ctx.drawImage(tex, x0, y0, x1-x0, y1-y0);
+  ctx.restore();
+}
+
+/* градиент затемнения вдоль глубины: тёмное у задней стены/углов */
+function shadePoly(pts, innerX, innerY, colA, colB){
+  ctx.save();
+  ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+  for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
+  ctx.closePath(); ctx.clip();
+  const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]);
+  const x0=Math.min(...xs), y0=Math.min(...ys);
+  const gr = ctx.createRadialGradient(innerX,innerY, 40, innerX,innerY, Math.max(W,H));
+  gr.addColorStop(0,colA); gr.addColorStop(1,colB);
+  ctx.fillStyle=gr; ctx.fillRect(x0-10,y0-10,W+20,H+20);
+  ctx.restore();
+}
+
+/* ============ ОБЪЕКТЫ НА ЗАДНЕЙ СТЕНЕ ============ */
+function drawDoor(b){
+  const dw = 78, dh = 170;
+  const dx = b.x + b.w/2 - dw/2, dy = b.y + b.h - dh;
+  // рама (объём: торец виден сбоку)
+  ctx.fillStyle='#241a12'; ctx.fillRect(dx-6, dy-6, dw+12, dh+6);
+  // полотно — филенчатая металлическая дверь
+  const gd = ctx.createLinearGradient(dx,0,dx+dw,0);
+  gd.addColorStop(0,'#6b6f75'); gd.addColorStop(0.5,'#8d9298'); gd.addColorStop(1,'#575b60');
+  ctx.fillStyle=gd; ctx.fillRect(dx,dy,dw,dh);
+  // горизонтальные рёбра (штамповка)
+  ctx.strokeStyle='rgba(0,0,0,0.35)'; ctx.lineWidth=2;
+  for(let i=1;i<6;i++){
+    const yy = dy + i*dh/6;
+    ctx.beginPath(); ctx.moveTo(dx+4,yy); ctx.lineTo(dx+dw-4,yy); ctx.stroke();
+    ctx.strokeStyle='rgba(255,255,255,0.15)';
+    ctx.beginPath(); ctx.moveTo(dx+4,yy+2); ctx.lineTo(dx+dw-4,yy+2); ctx.stroke();
+    ctx.strokeStyle='rgba(0,0,0,0.35)';
+  }
+  // ручка
+  ctx.fillStyle='#cfd3d8'; ctx.fillRect(dx+dw-14, dy+dh/2-3, 8, 6);
+  // тень двери на стене
+  ctx.fillStyle='rgba(0,0,0,0.3)'; ctx.fillRect(dx-10,dy-10,dw+20,4);
+}
+
+function drawWindow(b){
+  // окно на ЛЕВОЙ боковой стене — рисуется в перспективе отдельной функцией
+}
+
+function drawWindowOnLeftWall(r){
+  // окно — прямоугольник в плоскости левой стены, между t1 и t2 по глубине
+  const b = r.back;
+  const t1=0.25, t2=0.55;            // глубина окна
+  const yTopF=0.30, yBotF=0.62;      // высота относительно передней стены (доли H)
+  // передняя вертикальная кромка при t: интерполяция между краем экрана и задней стеной
+  function wallVert(t, fracTop, fracBot){
+    // левая стена: верхняя линия идёт от (0,0)->(b.x,b.y), нижняя от (0,H)->(b.x,b.y+b.h)
+    const topY = 0 + (b.y-0)*t;
+    const botY = H + (b.y+b.h-H)*t;
+    const x    = 0 + (b.x-0)*t;
+    const yt = topY + (botY-topY)*fracTop;
+    const yb = topY + (botY-topY)*fracBot;
+    return [x, yt, yb];
+  }
+  const a = wallVert(t1, yTopF, yBotF);
+  const c = wallVert(t2, yTopF, yBotF);
+  // рама
+  ctx.fillStyle='#2a2118';
   ctx.beginPath();
-  ctx.moveTo(W / 2, FLOOR_Y);
-  ctx.lineTo(W / 2 - 60, H);
+  ctx.moveTo(a[0]-4,a[1]-4); ctx.lineTo(c[0]-4,c[1]-4); ctx.lineTo(c[0]-4,c[2]+4); ctx.lineTo(a[0]-4,a[2]+4);
+  ctx.closePath(); ctx.fill();
+  // стекло — ночной синий с бликами луны
+  const gw = ctx.createLinearGradient(a[0],a[1],c[0],c[2]);
+  gw.addColorStop(0,'#1b2a4a'); gw.addColorStop(1,'#0d1526');
+  ctx.fillStyle=gw;
+  ctx.beginPath();
+  ctx.moveTo(a[0],a[1]); ctx.lineTo(c[0],c[1]); ctx.lineTo(c[0],c[2]); ctx.lineTo(a[0],a[2]);
+  ctx.closePath(); ctx.fill();
+  // луна за окном
+  ctx.fillStyle='rgba(220,230,255,0.9)';
+  ctx.beginPath(); ctx.arc((a[0]+c[0])/2+8,(a[1]+c[2])/2-14, 9, 0, 7); ctx.fill();
+  // переплёт
+  ctx.strokeStyle='#2a2118'; ctx.lineWidth=4;
+  ctx.beginPath();
+  ctx.moveTo((a[0]+c[0])/2, a[1]); ctx.lineTo((a[0]+c[0])/2, a[2]);
+  ctx.moveTo(a[0],(a[1]+a[2])/2); ctx.lineTo(c[0],(c[1]+c[2])/2);
   ctx.stroke();
-}
-
-// ---------- Потолок ----------
-function drawCeiling() {
-  ctx.fillStyle = '#2e2b28';
-  ctx.fillRect(WALL_L, 0, WALL_R - WALL_L, CEIL_Y);
-  // Балки
-  ctx.fillStyle = '#4a3f35';
-  for (let i = 0; i < 5; i++) {
-    ctx.fillRect(WALL_L + 40 + i * 180, CEIL_Y - 12, 24, 12);
-  }
-}
-
-// ---------- Окно (слева) ----------
-function drawWindow() {
-  // Рама
-  ctx.fillStyle = '#6b5636';
-  ctx.fillRect(WIN_X - 8, WIN_Y - 8, WIN_W + 16, WIN_H + 16);
-  // Стекло — ночное небо снаружи
-  const sky = ctx.createLinearGradient(0, WIN_Y, 0, WIN_Y + WIN_H);
-  sky.addColorStop(0, lightOn ? '#1e3a5f' : '#0d1b2e');
-  sky.addColorStop(1, lightOn ? '#2c5a8c' : '#152438');
-  ctx.fillStyle = sky;
-  ctx.fillRect(WIN_X, WIN_Y, WIN_W, WIN_H);
-
-  // Луна за окном
-  ctx.fillStyle = '#e8e4c9';
-  ctx.beginPath();
-  ctx.arc(WIN_X + WIN_W - 35, WIN_Y + 40, 16, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Перекладины
-  ctx.fillStyle = '#6b5636';
-  ctx.fillRect(WIN_X + WIN_W / 2 - 3, WIN_Y, 6, WIN_H);
-  ctx.fillRect(WIN_X, WIN_Y + WIN_H / 2 - 3, WIN_W, 6);
-
-  // Подоконник
-  ctx.fillStyle = '#7a6440';
-  ctx.fillRect(WIN_X - 14, WIN_Y + WIN_H + 8, WIN_W + 28, 10);
-}
-
-// ---------- Дверь (задняя стена) ----------
-function drawDoor() {
-  // Косяк
-  ctx.fillStyle = '#3d2f1e';
-  ctx.fillRect(DOOR_X - 8, DOOR_Y - 8, DOOR_W + 16, DOOR_H + 8);
-  // Полотно
-  const dg = ctx.createLinearGradient(DOOR_X, 0, DOOR_X + DOOR_W, 0);
-  dg.addColorStop(0, '#7a4a22');
-  dg.addColorStop(0.5, '#8f5a2c');
-  dg.addColorStop(1, '#6b3f1c');
-  ctx.fillStyle = dg;
-  ctx.fillRect(DOOR_X, DOOR_Y, DOOR_W, DOOR_H);
-
-  // Филенки
-  ctx.strokeStyle = '#5a3517';
-  ctx.lineWidth = 3;
-  ctx.strokeRect(DOOR_X + 12, DOOR_Y + 15, DOOR_W - 24, 80);
-  ctx.strokeRect(DOOR_X + 12, DOOR_Y + 115, DOOR_W - 24, DOOR_H - 135);
-
-  // Ручка
-  ctx.fillStyle = '#d4af37';
-  ctx.beginPath();
-  ctx.arc(DOOR_X + DOOR_W - 18, DOOR_Y + DOOR_H / 2, 6, 0, Math.PI * 2);
-  ctx.fill();
-}
-
-// ---------- Лампочка и свет ----------
-function drawBulbAndLight() {
-  // Провод
-  ctx.strokeStyle = '#222';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(BULB_X, CEIL_Y);
-  ctx.lineTo(BULB_X, BULB_Y - 10);
-  ctx.stroke();
-
-  // Патрон
-  ctx.fillStyle = '#333';
-  ctx.fillRect(BULB_X - 7, BULB_Y - 14, 14, 10);
-
-  if (lightOn) {
-    // Конус света на пол
-    const coneGrad = ctx.createRadialGradient(BULB_X, BULB_Y, 10, BULB_X, BULB_Y, 420);
-    coneGrad.addColorStop(0, 'rgba(255,240,180,0.55)');
-    coneGrad.addColorStop(0.4, 'rgba(255,235,160,0.22)');
-    coneGrad.addColorStop(1, 'rgba(255,235,160,0)');
-    ctx.fillStyle = coneGrad;
+  // лунный свет, падающий из окна на пол
+  if(lightOn || true){
+    ctx.save();
+    const f = r.floor;
+    ctx.beginPath(); ctx.moveTo(f[0][0],f[0][1]);
+    for(let i=1;i<f.length;i++)ctx.lineTo(f[i][0],f[i][1]);
+    ctx.closePath(); ctx.clip();
+    const lg = ctx.createLinearGradient(a[0],a[2], 350, H);
+    lg.addColorStop(0,'rgba(160,190,255,0.18)'); lg.addColorStop(1,'rgba(160,190,255,0)');
+    ctx.fillStyle=lg;
     ctx.beginPath();
-    ctx.moveTo(BULB_X - 12, BULB_Y);
-    ctx.lineTo(BULB_X - 320, H);
-    ctx.lineTo(BULB_X + 320, H);
-    ctx.lineTo(BULB_X + 12, BULB_Y);
-    ctx.closePath();
-    ctx.fill();
-
-    // Пятно света на полу
-    const pool = ctx.createRadialGradient(BULB_X, FLOOR_Y + 60, 20, BULB_X, FLOOR_Y + 60, 260);
-    pool.addColorStop(0, 'rgba(255,245,200,0.5)');
-    pool.addColorStop(1, 'rgba(255,245,200,0)');
-    ctx.fillStyle = pool;
-    ctx.beginPath();
-    ctx.ellipse(BULB_X, FLOOR_Y + 70, 280, 90, 0, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.moveTo(a[0], a[2]); ctx.lineTo(c[0], c[2]);
+    ctx.lineTo(c[0]+260, H); ctx.lineTo(a[0]+120, H);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
   }
+}
 
-  // Сама лампочка
-  ctx.fillStyle = lightOn ? '#fff6c9' : '#8a8570';
+/* ============ ПОТОЛОК И ЛАМПОЧКА ============ */
+function drawCeilingBeams(r){
+  const b = r.back;
+  ctx.strokeStyle='rgba(30,22,16,0.9)';
+  for(let i=1;i<=4;i++){
+    const t = i/5;
+    const yL = 0 + (b.y-0)*t, xL = 0 + (b.x-0)*t;
+    const yR = 0 + (b.y-0)*t, xR = W + (b.x+b.w-W)*t;
+    const th = 14*(1-t)+4;
+    ctx.lineWidth = th;
+    ctx.beginPath(); ctx.moveTo(xL,yL); ctx.lineTo(xR,yR); ctx.stroke();
+    ctx.strokeStyle='rgba(70,52,38,0.9)';
+    ctx.lineWidth = th*0.4;
+    ctx.beginPath(); ctx.moveTo(xL,yL-th*0.3); ctx.lineTo(xR,yR-th*0.3); ctx.stroke();
+    ctx.strokeStyle='rgba(30,22,16,0.9)';
+  }
+}
+
+function drawBulb(r){
+  const b = r.back;
+  // лампочка висит по центру комнаты на ~60% глубины
+  const t = 0.62;
+  const cxl = W/2 + (vpX-W/2)*t*0.2;
+  const ceilY = 0 + (b.y-0)*t;
+  const wireLen = 46*(1-t)+26;
+  const by = ceilY + wireLen;   // позиция лампы
+  // провод
+  ctx.strokeStyle='#111'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(W/2, ceilY); ctx.lineTo(cxl, by-10); ctx.stroke();
+  // патрон
+  ctx.fillStyle='#2b2b2b'; ctx.fillRect(cxl-7, by-14, 14, 8);
+  // сама лампа
+  if(lightOn){
+    const fl = 0.92 + Math.random()*0.08;
+    const glow = ctx.createRadialGradient(cxl,by,2, cxl,by,90*fl);
+    glow.addColorStop(0,'rgba(255,240,190,0.95)');
+    glow.addColorStop(0.25,'rgba(255,220,140,0.45)');
+    glow.addColorStop(1,'rgba(255,200,100,0)');
+    ctx.fillStyle=glow; ctx.beginPath(); ctx.arc(cxl,by,90,0,7); ctx.fill();
+    ctx.fillStyle='#fff6d8';
+  } else {
+    ctx.fillStyle='#3a3733';
+  }
+  ctx.beginPath(); ctx.arc(cxl,by,9,0,7); ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.25)'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.arc(cxl-2,by-2,4,3.5,5.5); ctx.stroke();
+  return [cxl, by];
+}
+
+/* конус света лампы на пол/стены */
+function drawLightCone(r, bulbPos){
+  if(!lightOn) return;
+  const [bx,by]=bulbPos;
+  const b=r.back;
+  // световое пятно на полу — эллипс под лампой
+  const floorY = H*0.86;
+  ctx.save();
   ctx.beginPath();
-  ctx.arc(BULB_X, BULB_Y, 11, 0, Math.PI * 2);
-  ctx.fill();
+  const f=r.floor; ctx.moveTo(f[0][0],f[0][1]);
+  for(let i=1;i<f.length;i++)ctx.lineTo(f[i][0],f[i][1]);
+  ctx.closePath(); ctx.clip();
+  const pool = ctx.createRadialGradient(bx+ (W/2-bx)*0.3, floorY, 10, bx+(W/2-bx)*0.3, floorY, 330);
+  pool.addColorStop(0,'rgba(255,230,160,0.5)');
+  pool.addColorStop(0.5,'rgba(255,210,130,0.18)');
+  pool.addColorStop(1,'rgba(255,200,120,0)');
+  ctx.fillStyle=pool; ctx.fillRect(0,0,W,H);
+  ctx.restore();
+  // конус от лампы вниз
+  const cone = ctx.createLinearGradient(bx,by,bx,floorY);
+  cone.addColorStop(0,'rgba(255,235,170,0.22)');
+  cone.addColorStop(1,'rgba(255,220,140,0.02)');
+  ctx.fillStyle=cone;
+  ctx.beginPath();
+  ctx.moveTo(bx-6,by);
+  ctx.lineTo(bx - 300, floorY+40);
+  ctx.lineTo(bx + 300, floorY+40);
+  ctx.lineTo(bx+6,by);
+  ctx.closePath(); ctx.fill();
+  // свет на задней стене — тёплое пятно
+  ctx.save();
+  ctx.beginPath(); ctx.rect(b.x,b.y,b.w,b.h); ctx.clip();
+  const back = ctx.createRadialGradient(W/2, b.y+b.h*0.35, 20, W/2, b.y+b.h*0.35, 260);
+  back.addColorStop(0,'rgba(255,220,150,0.30)');
+  back.addColorStop(1,'rgba(255,220,150,0)');
+  ctx.fillStyle=back; ctx.fillRect(b.x,b.y,b.w,b.h);
+  ctx.restore();
+}
 
-  if (lightOn) {
-    // Свечение вокруг нити
-    ctx.fillStyle = 'rgba(255,255,200,0.35)';
-    ctx.beginPath();
-    ctx.arc(BULB_X, BULB_Y, 20, 0, Math.PI * 2);
-    ctx.fill();
+/* тень от двери на пол */
+function drawProps(r){
+  const b=r.back;
+  // ящик у правой стены на полу
+  const t=0.45;
+  const x = W + (b.x+b.w-W)*t;
+  const yTop = 0 + (b.y-0)*t;
+  const yBot = H + (b.y+b.h-H)*t;
+  const size = 46*(1-t)+26;
+  const y = yBot - size;
+  // верхняя грань (видна сверху — объём!)
+  ctx.fillStyle='#7a5a30';
+  ctx.beginPath();
+  ctx.moveTo(x-size, y); ctx.lineTo(x-size*0.6, y-size*0.35);
+  ctx.lineTo(x+size*1.1, y-size*0.35); ctx.lineTo(x+size*0.7, y);
+  ctx.closePath(); ctx.fill();
+  // фасад
+  const wood = ctx.createLinearGradient(x-size,0,x+size*0.7,0);
+  wood.addColorStop(0,'#5d4222'); wood.addColorStop(1,'#8a6335');
+  ctx.fillStyle=wood; ctx.fillRect(x-size, y, size*1.7, size);
+  ctx.strokeStyle='rgba(0,0,0,0.4)'; ctx.lineWidth=2;
+  ctx.strokeRect(x-size, y, size*1.7, size);
+  ctx.beginPath(); ctx.moveTo(x-size*0.15,y); ctx.lineTo(x-size*0.15,y+size); ctx.stroke();
+  // тень ящика
+  ctx.fillStyle='rgba(0,0,0,0.35)';
+  ctx.beginPath();
+  ctx.ellipse(x-size*0.15, y+size+6, size*1.1, 10, 0, 0, 7); ctx.fill();
+}
+
+/* ============ ГЛАВНАЯ ОТРИСОВКА ============ */
+function render(){
+  vpX = W/2 + mouseDX*60;
+  vpY = H*0.46 + mouseDY*30;
+  const r = room();
+
+  // фон (за пределами — ничего, но на всякий чёрный)
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+
+  // ---- пол
+  texPoly(r.floor, concrete, 1);
+  shadePoly(r.floor, W/2, H+100, 'rgba(0,0,0,0)', 'rgba(0,0,0,0.75)');
+
+  // ---- потолок
+  fillPoly(r.ceil, '#171410');
+  drawCeilingBeams(r);
+
+  // ---- левая стена (кирпич, темнее — не освещена напрямую)
+  texPoly(r.left, brickTexDark, 1);
+  shadePoly(r.left, 0, H/2, 'rgba(255,255,255,0.06)', 'rgba(0,0,0,0.7)');
+
+  // ---- правая стена
+  texPoly(r.right, brickTexDark, 1);
+  shadePoly(r.right, W, H/2, 'rgba(255,255,255,0.04)', 'rgba(0,0,0,0.78)');
+
+  // ---- задняя стена (кирпич) + дверь
+  texPoly([ [r.back.x,r.back.y],[r.back.x+r.back.w,r.back.y],
+           [r.back.x+r.back.w,r.back.y+r.back.h],[r.back.x,r.back.y+r.back.h] ],
+           brickTexLight, 1);
+  drawDoor(r.back);
+
+  // ---- окно на левой стене (в перспективе)
+  drawWindowOnLeftWall(r);
+
+  // ---- предметы
+  drawProps(r);
+
+  // ---- освещение
+  const bulb = drawBulb(r);
+  drawLightCone(r, bulb);
+
+  // общая атмосфера / виньетка
+  const vg = ctx.createRadialGradient(W/2,H/2,H*0.35, W/2,H/2, H*0.95);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1, lightOn ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.88)');
+  ctx.fillStyle=vg; ctx.fillRect(0,0,W,H);
+
+  if(!lightOn){
+    // синеватый лунный свет когда лампа выключена
+    ctx.fillStyle='rgba(40,60,120,0.10)'; ctx.fillRect(0,0,W,H);
   }
-}
-
-// ---------- Общая темнота при выключенном свете ----------
-function drawDarkness() {
-  if (!lightOn) {
-    ctx.fillStyle = 'rgba(5,5,15,0.72)';
-    ctx.fillRect(0, 0, W, H);
-
-    // Слабый лунный свет из окна
-    const moon = ctx.createRadialGradient(WIN_X + WIN_W / 2, WIN_Y + WIN_H / 2, 10,
-                                          WIN_X + WIN_W / 2, WIN_Y + WIN_H / 2, 220);
-    moon.addColorStop(0, 'rgba(120,150,200,0.25)');
-    moon.addColorStop(1, 'rgba(120,150,200,0)');
-    ctx.fillStyle = moon;
-    ctx.fillRect(0, 0, W, H);
-  }
-}
-
-// ---------- Боковые стены (перспектива) ----------
-function drawSideWalls() {
-  // Левая полоса стены
-  drawBrickWall(0, CEIL_Y, WALL_L, FLOOR_Y - CEIL_Y, [122, 61, 42], '#77726a', 20, 24);
-  // Правая полоса стены
-  drawBrickWall(WALL_R, CEIL_Y, W - WALL_R, FLOOR_Y - CEIL_Y, [122, 61, 42], '#77726a', 20, 24);
-}
-
-// ---------- Главный цикл отрисовки ----------
-function render() {
-  // Задняя кирпичная стена
-  drawBrickWall(0, CEIL_Y, W, FLOOR_Y - CEIL_Y, [138, 66, 46], '#7d7870');
-
-  drawSideWalls();
-  drawCeiling();
-  drawFloor();
-  drawWindow();
-  drawDoor();
-  drawBulbAndLight();
-  drawDarkness();
-
-  // Подсказка
-  ctx.fillStyle = 'rgba(255,255,255,0.6)';
-  ctx.font = '14px monospace';
-  ctx.fillText('Клик — включить/выключить свет', 12, H - 12);
 
   requestAnimationFrame(render);
 }
-
-// Переключение света по клику
-canvas.addEventListener('click', () => { lightOn = !lightOn; });
-
 render();
 </script>
 </body>
